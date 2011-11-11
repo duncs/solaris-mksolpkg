@@ -1,7 +1,7 @@
 README for mksolpkg
 ===================
 
-'mksolpkg' is a tool written to aid with solaris packaging and has been in use on the Opssview project (http://www.opsera.com) for some years.
+'mksolpkg' is a tool written to aid with solaris packaging and has been in use on the Opssview project (http://www.opsview.com) for some years.
 
 It is not perfect, is targetted for Opsview and suplimentary package builds and there are alternatives available (search in your site).
 
@@ -22,4 +22,5 @@ ALTsnmpsess
 ALTgraphviz
 ALTlibmcrypt
 
-
+This code has been made publically available at 
+    https://github.com/duncs/solaris-mksolpkg
