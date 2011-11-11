@@ -1,0 +1,327 @@
+#!/usr/bin/bash  -x
+#
+#    Copyright (C) 2003-2011 Opsera Limited. All rights reserved
+#
+#    This file is part of Opsview
+#
+#    Opsview is free software; you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation; either version 2 of the License, or
+#    (at your option) any later version.
+#
+#    Opsview is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with Opsview; if not, write to the Free Software
+#    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+#
+# NOTE: requires GNU tar
+#
+# Note: dont specify PATH here as breaks nagios profile fixes
+#PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+PATH=$PATH:/usr/local/mysql/bin:/usr/sbin
+
+SCRIPT=${0}
+SCRIPTDIR=$(cd ${SCRIPT%/*} 1>/dev/null ; pwd)
+SCRIPTNM=${0##*/}
+VERSION="$Revision: 143 $"
+REV=`uname -r | sed 's/5\.//'`
+BITS=""
+USAGE="Usage: ${SCRIPTNM} [vh] [-n] [-o <os>]
+Where:
+  -v - version and exit
+  -h - this help text
+  -s - define top directory of staging area - defaults to /tmp
+  -n - do not remove staging area if it exists
+  -o <os> - override OS to be given in package names, i.e. -o 9
+  -b - Include processor bit in package name
+"
+
+die() { echo "$@" >> /dev/stderr; exit 1; }
+warn() { echo "$@" >> /dev/stderr; }
+
+# work out best place to put temp files - where has more room
+SPC_TMP=$(df -b /tmp | tail -1 | awk '{print $NF}')
+SPC_VARTMP=$(df -b /var/tmp | tail -1 | awk '{print $NF}')
+
+STG=/tmp
+if [ $SPC_VARTMP -gt $SPC_TMP ]; then
+    STG=/var/tmp
+fi
+
+while getopts ':dvhnbo:s:' KEY $*
+do
+  case $KEY in
+    v)  echo "$SCRIPTNM: $VERSION" ; exit 0 ;;
+    d)  DEBUG="true";;
+    n)  NO_CLEAR="true";;
+    s)  STG=$OPTARG;;
+    b)  BITS="_`isainfo -b`";;
+    o)  REV=$OPTARG;;
+
+    # Note - have to do it this way as case in ksh cannot "fall through"
+    h)  echo "$USAGE" ; exit 0 ;;
+    ?)  echo "FATAL: Unknown option $OPTARG"; echo "$USAGE" ; exit 0 ;;
+  esac
+done
+
+if [ ! -d "$STG" ]; then
+	die "Staging directory $STG doesnt exist"
+fi
+
+if [ ! -d solaris_pkg ]; then
+	warn "Unable to find 'solaris_pkg'"
+	die "Please ensure you are in the top directory of the repository to be packaged"
+fi
+
+TOPDIR=`pwd`
+project="$(basename $TOPDIR)"
+PKGDIR="$STG/$SCRIPTNM-$project"
+
+# Setup perl to use perlgcc config
+# NOTE: PERL5LIB is unset by build process so use PERLLIB too to pass through
+# important areas such as location of RRDs
+
+# Have to swap this depending on the build server used
+# ov-build-sol10n-xxx = CSW based build server (new style)
+# ov-build-sol10-xxx  = SunFreeware based build server (old style)
+hostname | grep sol10n 1>/dev/null
+if [ $? -eq 0 ]; then
+    PERL5LIB=/opt/csw/lib/perl:$PERL5LIB
+else
+    PERL5LIB=/usr/local/lib/perl/5.8.4:/usr/perl5/5.8.4/lib/Sun/Solaris/PerlGcc:$PERL5LIB
+fi
+PERLLIB=$PERL5LIB:$PERLLIB
+PKG_CONFIG_PATH=/opt/csw/lib/pkgconfig:/usr/lib/pkgconfig:/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+export PERL5LIB PKG_CONFIG_PATH PERLLIB
+
+if [ -z "$NO_CLEAR" ]; then
+    test -d $PKGDIR && rm -rf $PKGDIR
+fi
+
+PKGSRC=$PKGDIR/source
+DESTDIR=$PKGDIR
+export DESTDIR 
+
+if [ -f Makefile ] && [ ! -d $PKGSRC ]; then
+    make all DESTDIR=$PKGSRC || die "Failed to 'make all'"
+    make install DESTDIR=$PKGSRC || die "Failed to 'make install'"
+fi
+
+if [ ! -x $TOPDIR/solaris_pkg/get_version ]; then
+	die "'solaris_pkg/get_version' doesn't exist or cannot be run"
+fi
+
+VERSION=`$TOPDIR/solaris_pkg/get_version`
+
+if [ -z "$VERSION" ]; then
+	die "Unable to get version information from 'solaris_pkg/get_version'"
+fi
+
+for pkginfo in $TOPDIR/solaris_pkg/pkginfo*; do
+    echo "Using pkginfo file: $pkginfo"
+    build_pkg=$(basename $pkginfo | awk -F. '{print $2}')
+    echo "Using build_pkg of $build_pkg"
+    if [ -n "$build_pkg" ]; then
+        build_pkg=".$build_pkg"
+    fi
+    PKGINST=$PKGDIR/install$build_pkg
+    rm -rf $PKGINST
+    mkdir -p $PKGINST
+
+    # grab the package name from the pkginfo file in the repo, remove PKG= and spaces onwards
+    PKG=`grep "^PKG=" $pkginfo | sed -e 's/^.*=//' -e 's/[ 	].*$//'`
+    ARCH=`grep "^ARCH=" $pkginfo | sed -e 's/^.*=//' -e 's/[ 	].*$//'`
+    if [ "$ARCH" != "all" ]; then
+	    ARCH=`uname -i`
+    fi
+    case $ARCH in
+	    i86pc) ARCH=i386;;
+    esac
+    
+    if [ -z "$PKG" ]; then
+	    die "PKG is not defined in solaris_pkg/pkginfo$build_pkg"
+    fi
+
+    
+    if [ $REV -lt 8 ]; then
+	    die "Solaris 8 is the minimum supported"
+    fi
+    
+    # Copy in extra support files - use tar to remove the .svn dirs
+    if [ -d $TOPDIR/solaris_pkg/package$build_pkg ]; then
+	    (cd $TOPDIR/solaris_pkg/package$build_pkg ; tar cf - --exclude=.svn *) | (cd $PKGDIR ; tar xf -)
+    fi
+
+    # now copy in all the other files
+    if [ -f $TOPDIR/solaris_pkg/install_file_list$build_pkg ]; then
+	    egrep -v "^#|^[ 	]*$" $TOPDIR/solaris_pkg/install_file_list$build_pkg | while read SOURCE DEST JUNK; do
+		    DONE=$PKGINST
+            if [ "$SOURCE" == "." ]; then
+                SOURCE=$TOPDIR
+            fi
+            SOURCE=$(eval echo $SOURCE)
+            echo $SOURCE | grep '^/' 1>/dev/null
+            if [[ $? != 0 ]]; then
+                SOURCE=$PKGSRC/$SOURCE
+            fi
+    
+		    if [ ! -f $SOURCE ] && [ ! -d $SOURCE ]; then
+			    die "Unable to find '$SOURCE'"
+		    fi
+		    for D in `dirname $DEST | sed 's!/! !g'`
+		    do
+			    DONE="$DONE/$D"
+			    [ ! -d $DONE ] && mkdir $DONE
+		    done
+		    if [ -d $SOURCE ]; then
+			    echo "Copying in files from $SOURCE to $PKGINST/$DEST"
+			    [ ! -d $PKGINST/$DEST ] && mkdir $PKGINST/$DEST
+			    # use tar so .svn dirs can be stripped out
+			    (cd $SOURCE ; tar cf - --exclude=.svn . ) | (cd $PKGINST/$DEST ; tar xf -)
+		    else
+			    cp $SOURCE $PKGINST/$DEST
+		    fi
+    
+		    # also get arch specific files
+		    if [ -d $SOURCE.$ARCH ]; then
+			    echo "Copying in files from $SOURCE.$ARCH"
+			    (cd $SOURCE.$ARCH ; tar cf - --exclude=.svn . ) | (cd $PKGINST/$DEST ; tar xf -)
+		    fi
+	    done
+    else
+	    echo "NOTE: no install_file_list file found in solaris_pkg$build_pkg; using previous 'make install' directory as source"
+        #/opt/sfw/bin/cp -a $PKGSRC/* $PKGINST
+        (cd $PKGSRC && tar cvf - . ) | (cd $PKGINST ; tar xvf -)
+    fi
+
+    CONTROL_FILES="copyright pkginfo preinstall postinstall preremove postremove checkinstall request depend space"
+
+    # create Prototype file
+    REMOVE="Prototype|$(echo $CONTROL_FILES | sed 's/ /|/g')"
+    find $PKGINST | egrep -v "^${PKGINST}/($REMOVE)\$" | pkgproto > ${PKGDIR}/Prototype
+
+    case $REV in
+	    10) test -f $TOPDIR/solaris_pkg/depend-sol10$build_pkg && cp $TOPDIR/solaris_pkg/depend-sol10$build_pkg solaris_pkg/depend;;
+	    *) rm -f $TOPDIR/solaris_pkg/depend;;
+    esac
+    
+    for FILE in $CONTROL_FILES; do
+	    if [ -f $TOPDIR/solaris_pkg/$FILE$build_pkg ]; then
+		    cp $TOPDIR/solaris_pkg/$FILE$build_pkg $PKGDIR/$FILE
+		    echo "i $FILE" >> ${PKGDIR}/Prototype
+	    fi
+    done
+
+    CLASSES="none"
+
+    # CLASSES PROBLEM HERE - TODO:
+    # what happend when a sub pkg also contins classes - the echo
+    # here picks up all class files for parent
+    for FILE in `cd $TOPDIR/solaris_pkg/ ; echo i.*$build_pkg r.*$build_pkg`; do
+        warn '***********************************************'
+        warn 'WARNING: classes file TODO - main package will pick '
+        warn 'up sub package class files'
+        warn 'As a workaround ALL class files should be called'
+        warn '  i.<class>.<pkgname>'
+        warn '***********************************************'
+        if [ -n "$build_pkg" ]; then
+            DEST=$(echo $FILE | sed -e "s/$build_pkg//")
+        else
+            DEST=$FILE
+        fi
+        DEST=$(echo $DEST | sed -e "s/\.$PKG//")
+	    test -f $TOPDIR/solaris_pkg/$FILE || continue
+	    cp $TOPDIR/solaris_pkg/$FILE $PKGDIR/$DEST
+	    echo "i $DEST" >> ${PKGDIR}/Prototype
+	    CLASS=`echo $DEST | sed 's/^[ir]\.//'`
+	    if ! echo $CLASSES | grep -w $CLASS 1>/dev/null; then
+		    CLASSES="$CLASSES $CLASS"
+	    fi
+	    perl -p -i -e "s!^f (\w+) ([-\w\./]+/$CLASS .*)!f $CLASS \$2!" ${PKGDIR}/Prototype
+    done
+
+    # cater for manifest files
+    cp /usr/sadm/install/scripts/*.manifest $PKGDIR/
+    CLASSES="$CLASSES manifest"
+    perl -p -i -e "s!^f (\w+) (/var/svc/manifest.*?) .*!f manifest \$2!" ${PKGDIR}/Prototype
+
+    # correct owner & group
+    perl -p -i -e "s# (\w+) (\w+)\$# nagios nagios#" ${PKGDIR}/Prototype
+
+    # and revert for any etc dirs
+    perl -p -i -e "s#^(.*$PKGDIR/etc.*) (\w+) (\w+)\$#\$1 root other#" ${PKGDIR}/Prototype
+
+    # remove known system dirs that should already be there else these cause errors at install
+
+    # remove '/' essentially
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST !)" ${PKGDIR}/Prototype
+    
+    # remove /etc and /etc/[rc|init.d] directories but not subdirs in it
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/etc\s!)" ${PKGDIR}/Prototype
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/etc/init.d\s!)" ${PKGDIR}/Prototype
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/etc/rc?.d!)" ${PKGDIR}/Prototype
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/etc/opt\s!)" ${PKGDIR}/Prototype
+    
+    # remove /opt directory but not subdirs in it
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/opt\s!)" ${PKGDIR}/Prototype
+    
+    # remove /usr  and /usr/local, and child bin, libexec, include directories
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/usr(?:/local)?(?:/(?:lib|include|bin|libexec|share|man)(?:/(?:man\d|aclocal)?)?)? !)" ${PKGDIR}/Prototype
+    
+    # remove /var, /var/run and /var/run/log directories
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/var(?:/run)?(?:/log)? !)" ${PKGDIR}/Prototype
+    
+    # remove any perl dirs, incase we packaging server perl
+    perl -MConfig -n -i -e "print unless (m!^d \w+ $PKGINST/usr/perl5(?:/site_perl)?(?:/5.8.4)?(?:/lib)?(?:/\$Config{archname})?(?:/auto)? !)" ${PKGDIR}/Prototype
+    
+    # Now remove all the specific paths; left until now as its easier for the above searches
+    perl -p -i -e "s!$PKGINST/!!" ${PKGDIR}/Prototype
+    
+    # And remove any files that shouldnt be there
+    perl -n -i -e "print unless(m!(?: Prototype|Makefile) !)" ${PKGDIR}/Prototype
+    
+    # if it exists, call 'tidy_package' that can work as necessary
+    if [ -f $TOPDIR/solaris_pkg/tidy_package$build_pkg ]; then
+	    $TOPDIR/solaris_pkg/tidy_package$build_pkg $PKGDIR || die "solaris_pkg/tidy_package failed"
+    fi
+
+
+    # now make the package
+    PSTAMP="$LOGNAME:`date '+%Y-%m-%d,%H-%M-%S'`"
+    echo pkgmk -a $ARCH -v $VERSION -p $PSTAMP -b $PKGINST -o -r / -d ${PKGDIR} -f ${PKGDIR}/Prototype CLASSES="$CLASSES"
+    pkgmk -a $ARCH -v $VERSION -p $PSTAMP -b $PKGINST -o -r / -d ${PKGDIR} -f ${PKGDIR}/Prototype CLASSES="$CLASSES"
+
+    # build up the file name
+    NAME="$PKG-$VERSION"
+
+    case $ARCH in
+	    all)
+		    NAME="$NAME-sol$REV-all.pkg"
+	    ;;
+    
+    
+	    *)
+		    NAME="$NAME-sol$REV-`uname -p`${BITS}.pkg"
+	    ;;
+    esac
+    
+    pkgtrans -o $PKGDIR $PKGDIR/$NAME $PKG
+    
+    pkginfo -d $PKGDIR/$NAME
+    if [ $? != 0 ]; then
+	    echo "Some problem testing the package..!"
+	    exit 2
+    fi
+    
+    rm -rf $NAME $NAME.gz
+    
+    cp $PKGDIR/$NAME .
+    
+    gzip -9 $NAME
+    echo "Created: $NAME.gz"
+
+done
