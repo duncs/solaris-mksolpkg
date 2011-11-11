@@ -1,0 +1,10 @@
+README for mksolpkg
+===================
+
+'mksolpkg' is a tool written to aid with solaris packaging and has been in use on the Opssview project (http://www.opsera.com) for some years.
+
+It is not perfect, and there are alternatives available (search in your site).
+
+Further documentation and usage examples may be forth coming.
+
+Patches may be accepted as long as they are fully backwards compatible.
