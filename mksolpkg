@@ -27,7 +27,7 @@ PATH=$PATH:/usr/local/mysql/bin:/usr/sbin
 SCRIPT=${0}
 SCRIPTDIR=$(cd ${SCRIPT%/*} 1>/dev/null ; pwd)
 SCRIPTNM=${0##*/}
-VERSION="$Revision: 143 $"
+VERSION="$Revision: 147 $"
 REV=`uname -r | sed 's/5\.//'`
 BITS=""
 USAGE="Usage: ${SCRIPTNM} [vh] [-n] [-o <os>]
@@ -38,6 +38,7 @@ Where:
   -n - do not remove staging area if it exists
   -o <os> - override OS to be given in package names, i.e. -o 9
   -b - Include processor bit in package name
+  -p - Specific sub-package to build
 "
 
 die() { echo "$@" >> /dev/stderr; exit 1; }
@@ -52,7 +53,9 @@ if [ $SPC_VARTMP -gt $SPC_TMP ]; then
     STG=/var/tmp
 fi
 
-while getopts ':dvhnbo:s:' KEY $*
+SUBPKG=all
+
+while getopts ':dvhnbo:s:p:' KEY $*
 do
   case $KEY in
     v)  echo "$SCRIPTNM: $VERSION" ; exit 0 ;;
@@ -61,6 +64,7 @@ do
     s)  STG=$OPTARG;;
     b)  BITS="_`isainfo -b`";;
     o)  REV=$OPTARG;;
+    p)  SUBPKG=$OPTARG;;
 
     # Note - have to do it this way as case in ksh cannot "fall through"
     h)  echo "$USAGE" ; exit 0 ;;
@@ -106,9 +110,12 @@ PKGSRC=$PKGDIR/source
 DESTDIR=$PKGDIR
 export DESTDIR 
 
+# change 'make all ; make isntall' into 'make SUBPKG ; make install-SUBPKG'
 if [ -f Makefile ] && [ ! -d $PKGSRC ]; then
-    make all DESTDIR=$PKGSRC || die "Failed to 'make all'"
-    make install DESTDIR=$PKGSRC || die "Failed to 'make install'"
+    echo "Running 'make $SUBPKG'"
+    make $SUBPKG DESTDIR=$PKGSRC || die "Failed to 'make all'"
+    echo "Running 'make install${SUBPKG:+-$SUBPKG}'"
+    make install${SUBPKG:+-$SUBPKG} DESTDIR=$PKGSRC || die "Failed to 'make install'"
 fi
 
 if [ ! -x $TOPDIR/solaris_pkg/get_version ]; then
@@ -121,7 +128,13 @@ if [ -z "$VERSION" ]; then
 	die "Unable to get version information from 'solaris_pkg/get_version'"
 fi
 
-for pkginfo in $TOPDIR/solaris_pkg/pkginfo*; do
+if [ "$SUBPKG" == "all" ] ; then
+    pkglist=$(echo $TOPDIR/solaris_pkg/pkginfo*)
+else
+   pkglist=$TOPDIR/solaris_pkg/pkginfo.$SUBPKG
+fi
+
+for pkginfo in $pkglist; do
     echo "Using pkginfo file: $pkginfo"
     build_pkg=$(basename $pkginfo | awk -F. '{print $2}')
     echo "Using build_pkg of $build_pkg"
