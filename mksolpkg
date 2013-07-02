@@ -27,7 +27,7 @@ PATH=$PATH:/usr/local/mysql/bin:/usr/sbin
 SCRIPT=${0}
 SCRIPTDIR=$(cd ${SCRIPT%/*} 1>/dev/null ; pwd)
 SCRIPTNM=${0##*/}
-VERSION="$Revision: 147 $"
+VERSION="$Revision: 148 $"
 REV=`uname -r | sed 's/5\.//'`
 BITS=""
 USAGE="Usage: ${SCRIPTNM} [vh] [-n] [-o <os>]
@@ -260,7 +260,7 @@ for pkginfo in $pkglist; do
     # cater for manifest files
     cp /usr/sadm/install/scripts/*.manifest $PKGDIR/
     CLASSES="$CLASSES manifest"
-    perl -p -i -e "s!^f (\w+) (/var/svc/manifest.*?) .*!f manifest \$2!" ${PKGDIR}/Prototype
+    perl -p -i -e "s#^f (\w+) ($PKGINST/var/svc/manifest.*?) .*#f manifest \$2#" ${PKGDIR}/Prototype
 
     # correct owner & group
     perl -p -i -e "s# (\w+) (\w+)\$# nagios nagios#" ${PKGDIR}/Prototype
@@ -285,8 +285,10 @@ for pkginfo in $pkglist; do
     # remove /usr  and /usr/local, and child bin, libexec, include directories
     perl -n -i -e "print unless (m!^d \w+ $PKGINST/usr(?:/local)?(?:/(?:lib|include|bin|libexec|share|man)(?:/(?:man\d|aclocal)?)?)? !)" ${PKGDIR}/Prototype
     
-    # remove /var, /var/run and /var/run/log directories
-    perl -n -i -e "print unless (m!^d \w+ $PKGINST/var(?:/run)?(?:/log)? !)" ${PKGDIR}/Prototype
+    # remove /var,, /var/svc, /var/run and /var/run/log directories
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/var(?:/run|/svc)?(?:/log)? !)" ${PKGDIR}/Prototype
+    # remove refrences to SVC manifest directories
+    perl -n -i -e "print unless (m!^d \w+ $PKGINST/var/svc/manifest/?(?:application|site|system|network)? !)" ${PKGDIR}/Prototype
     
     # remove any perl dirs, incase we packaging server perl
     perl -MConfig -n -i -e "print unless (m!^d \w+ $PKGINST/usr/perl5(?:/site_perl)?(?:/5.8.4)?(?:/lib)?(?:/\$Config{archname})?(?:/auto)? !)" ${PKGDIR}/Prototype
